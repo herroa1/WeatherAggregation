@@ -1,0 +1,14 @@
+# What the scheduled website build needs (the full notebook environment is ../requirements.txt)
+Cartopy==0.26.0
+cfgrib==0.9.15.1
+cryptography==50.0.2
+eccodes==2.50.0
+eccodeslib==2.50.0.33
+eckitlib==2.5.0.33
+h5netcdf==1.8.1
+h5py==3.16.0
+numpy==2.4.6
+pandas==3.0.3
+python-dotenv==1.2.4
+requests==2.34.2
+xarray==2026.9.0

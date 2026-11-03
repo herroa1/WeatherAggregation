@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+*.ipynb_checkpoints
+.env
+# Forecast data and downloads (never committed: the Met Office data mustn't be public)
+data/
+_site/
+# The repository is public, so notebook outputs (which hold forecast data) are stripped on commit
+# by the "strip-output" filter in .gitattributes (see website/README.md)

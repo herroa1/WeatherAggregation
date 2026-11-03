@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>UK Forecast Comparison</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --fg: #1d1d1f; --muted: #6b6b70; --line: #e3e3e0;
+    --accent: #2f5fd0; --grid: #ececea; --mean: #111111; --band: rgba(17, 17, 17, 0.12); --warn: #a15c00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --card: #1d1d20; --fg: #ececee; --muted: #9a9aa2; --line: #2e2e33;
+      --accent: #7ea2ff; --grid: #2a2a2f; --mean: #f4f4f4; --band: rgba(244, 244, 244, 0.14); --warn: #f0a640;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 12px 16px 40px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 1.3rem; margin: 8px 0 2px; }
+  h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  .muted { color: var(--muted); font-size: 0.85rem; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin: 14px 0; }
+  button, select, input[type=password] {
+    font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 11px; min-height: 38px;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+          border: 1px solid var(--line); cursor: pointer; user-select: none; font-size: 0.9rem; }
+  .chip input { display: none; }
+  .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .chip:not(.on) { opacity: 0.45; }
+  .chip:not(.on) .dot { background: transparent !important; outline: 1.5px solid var(--muted); }
+  .plot { width: 100%; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  input[type=range] { width: 100%; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  .warn { color: var(--warn); }
+  #login { max-width: 420px; margin: 12vh auto 0; }
+  #login form { display: grid; gap: 10px; }
+  #error { color: var(--warn); min-height: 1.2em; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="login" class="card">
+    <h1>UK Forecast Comparison</h1>
+    <p class="muted">This site is private. Enter the password to view the latest forecasts.</p>
+    <form id="login-form">
+      <input id="password" type="password" autocomplete="current-password" placeholder="Password" required>
+      <label class="muted"><input id="remember" type="checkbox" checked> Remember on this device</label>
+      <button class="primary" type="submit">Unlock</button>
+      <div id="error" role="alert"></div>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <header>
+      <div>
+        <h1>UK Forecast Comparison</h1>
+        <div class="muted" id="built"></div>
+      </div>
+      <button id="lock" type="button">Lock</button>
+    </header>
+
+    <section class="card">
+      <h2>Sources</h2>
+      <div class="muted">Tap to include or leave out a source. The means use only the sources picked.</div>
+      <div class="chips" id="chips"></div>
+      <div class="row">
+        <button type="button" id="all">All</button>
+        <button type="button" id="none">None</button>
+        <select id="location" aria-label="Location"></select>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Mean of selected sources</h2>
+      <div class="muted">At each time, the average of the picked sources forecasting that time. The shading spans the lowest to highest of them.</div>
+      <div id="mean-plot" class="plot"></div>
+    </section>
+
+    <section class="card">
+      <h2>All selected sources</h2>
+      <div class="muted">Each source, with the mean in bold. Hover or tap for values.</div>
+      <div id="all-plot" class="plot"></div>
+    </section>
+
+    <section class="card">
+      <h2>Maps</h2>
+      <div class="row" style="margin: 8px 0">
+        <div class="seg" id="map-field">
+          <button type="button" data-field="rain" class="on">Rain</button>
+          <button type="button" data-field="wind">Wind</button>
+        </div>
+        <select id="map-source" aria-label="Map source"></select>
+      </div>
+      <div class="row">
+        <button type="button" id="prev" aria-label="Earlier">&#8249;</button>
+        <div style="flex: 1; min-width: 140px">
+          <input type="range" id="map-time" min="0" value="0" aria-label="Valid time">
+          <div class="muted" id="map-time-label"></div>
+        </div>
+        <button type="button" id="next" aria-label="Later">&#8250;</button>
+      </div>
+      <div id="map-plot" class="plot"></div>
+    </section>
+
+    <section class="card">
+      <h2>Agreement with the benchmark</h2>
+      <div class="muted" id="scores-note"></div>
+      <div class="scroll"><table id="scores"></table></div>
+    </section>
+
+    <section class="card">
+      <h2>Runs</h2>
+      <div class="scroll"><table id="runs"></table></div>
+      <p class="muted">Data: Met Office; ECMWF (CC BY 4.0); NOAA; Deutscher Wetterdienst (CC BY 4.0);
+        Environment and Climate Change Canada (Open Government Licence – Canada). Coastline: Natural Earth.</p>
+    </section>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
+<script>
+// Must match website/build.py
+const PBKDF2_ITERATIONS = 600000;
+const PBKDF2_SALT = "uk-forecast-comparison";
+const KEY_STORE = "wx-key", PREFS_STORE = "wx-prefs";
+const COLOURS = ["#636efa", "#EF553B", "#00cc96", "#ab63fa", "#FFA15A", "#19d3f3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"];
+// Rain: clear when dry, so the coastline shows through
+const RAIN_SCALE = [[0, "rgba(0,0,0,0)"], [0.01, "rgba(198,219,239,0.9)"], [0.2, "#6baed6"], [0.5, "#2171b5"], [1, "#08306b"]];
+const FIELDS = {rain: {units: "mm", label: null, zmax: 10, scale: RAIN_SCALE},
+                wind: {units: "m/s", label: "10 m wind speed", zmax: 20, scale: "Viridis"}};
+
+const $ = (id) => document.getElementById(id);
+const enc = new TextEncoder();
+let data = null, colour = {}, selected = new Set(), state = {location: null, field: "rain", source: "mean", time: 0};
+
+function store(key, value) {
+  try { value === undefined ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch (e) {}
+}
+function stored(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+
+const toB64 = (bytes) => btoa(String.fromCharCode(...bytes));
+const fromB64 = (text) => Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+
+async function deriveKey(password) {
+  const base = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    {name: "PBKDF2", hash: "SHA-256", salt: enc.encode(PBKDF2_SALT), iterations: PBKDF2_ITERATIONS}, base, 256);
+  return new Uint8Array(bits);
+}
+
+async function fetchBlob() {
+  const response = await fetch("forecast.bin?t=" + Date.now(), {cache: "no-store"});
+  if (!response.ok) throw new Error(`Couldn't load the forecast data (${response.status})`);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function decrypt(blob, keyBytes) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({name: "AES-GCM", iv: blob.slice(0, 12)}, key, blob.slice(12));
+  const stream = new Blob([plain]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(stream).text());
+}
+
+async function unlock(keyBytes, remember) {
+  const blob = await fetchBlob();
+  data = await decrypt(blob, keyBytes);  // throws on a wrong key
+  if (remember) store(KEY_STORE, toB64(keyBytes));
+  start();
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = event.target.querySelector("button");
+  button.disabled = true;
+  $("error").textContent = "Unlocking…";
+  try {
+    await unlock(await deriveKey($("password").value), $("remember").checked);
+  } catch (e) {
+    $("error").textContent = e.name === "OperationError" ? "Wrong password" : e.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("lock").addEventListener("click", () => { store(KEY_STORE); location.reload(); });
+
+// ---- Formatting
+
+const fmtTime = (iso) => new Date(iso + "Z").toLocaleString("en-GB",
+  {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "UTC"}) + " UTC";
+const fmtRun = (iso) => new Date(iso + "Z").toLocaleString("en-GB",
+  {day: "numeric", month: "short", hour: "2-digit", timeZone: "UTC"}) + "Z";
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const rainLabel = () => `${data.rain_hours}-hour rainfall`;
+
+function baseLayout(extra) {
+  return Object.assign({
+    paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
+    font: {color: css("--fg"), size: 12}, margin: {l: 44, r: 10, t: 28, b: 36},
+    hovermode: "x unified", showlegend: false, dragmode: false,
+  }, extra);
+}
+const plotConfig = {responsive: true, displaylogo: false, modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d"]};
+
+// ---- Means over the selected sources
+
+function names() { return data.sources.map((s) => s.name).filter((n) => selected.has(n)); }
+
+function meanSeries(field) {
+  const at = new Map();
+  for (const name of names()) {
+    const series = data.locations[state.location][field][name];
+    if (!series) continue;
+    series.t.forEach((t, i) => {
+      const v = series.v[i];
+      const e = at.get(t) || {sum: 0, n: 0, min: Infinity, max: -Infinity};
+      e.sum += v; e.n += 1; e.min = Math.min(e.min, v); e.max = Math.max(e.max, v);
+      at.set(t, e);
+    });
+  }
+  const t = [...at.keys()].sort();
+  return {t, mean: t.map((k) => at.get(k).sum / at.get(k).n), n: t.map((k) => at.get(k).n),
+          min: t.map((k) => at.get(k).min), max: t.map((k) => at.get(k).max)};
+}
+
+function meanTraces(field, axis, withBand) {
+  const m = meanSeries(field), units = FIELDS[field].units, traces = [];
+  if (withBand) {
+    traces.push({x: m.t, y: m.max, yaxis: axis, mode: "lines", line: {width: 0}, hoverinfo: "skip"});
+    traces.push({x: m.t, y: m.min, yaxis: axis, mode: "lines", line: {width: 0}, fill: "tonexty",
+                 fillcolor: css("--band"), hoverinfo: "skip"});
+  }
+  traces.push({x: m.t, y: m.mean, customdata: m.n, yaxis: axis, name: "Mean", mode: "lines",
+               line: {color: css("--mean"), width: 3},
+               hovertemplate: `%{y:.2f} ${units} (mean of %{customdata})<extra>Mean</extra>`});
+  return traces;
+}
+
+function benchmarkEnd() {
+  if (!data.benchmark_end || !selected.has(data.benchmark)) return {shapes: [], annotations: []};
+  return {
+    shapes: [{type: "line", xref: "x", yref: "paper", x0: data.benchmark_end, x1: data.benchmark_end, y0: 0, y1: 1,
+              line: {color: css("--muted"), dash: "dash", width: 1}}],
+    annotations: [{x: data.benchmark_end, xref: "x", y: 1, yref: "paper", text: "benchmark ends", showarrow: false,
+                   xanchor: "left", yanchor: "top", font: {size: 10, color: css("--muted")}}],
+  };
+}
+
+function twoPanelLayout(height) {
+  return baseLayout(Object.assign({
+    height, grid: {rows: 2, columns: 1, pattern: "coupled", roworder: "top to bottom", ygap: 0.14},
+    xaxis: {gridcolor: css("--grid"), type: "date"},
+    yaxis: {title: {text: "mm"}, rangemode: "tozero", gridcolor: css("--grid"), fixedrange: true},
+    yaxis2: {title: {text: "m/s"}, rangemode: "tozero", gridcolor: css("--grid"), fixedrange: true},
+    annotations: [],
+  }, benchmarkEnd(), {
+    annotations: [
+      ...benchmarkEnd().annotations,
+      {text: `${rainLabel()}, ${state.location}`, xref: "paper", yref: "paper", x: 0, y: 1.06, showarrow: false, xanchor: "left", font: {size: 13}},
+      {text: `10 m wind speed, ${state.location}`, xref: "paper", yref: "paper", x: 0, y: 0.47, showarrow: false, xanchor: "left", font: {size: 13}},
+    ],
+  }));
+}
+
+function drawMeanPlot() {
+  const traces = [...meanTraces("rain", "y", true), ...meanTraces("wind", "y2", true)];
+  Plotly.react("mean-plot", traces, twoPanelLayout(520), plotConfig);
+}
+
+function drawAllPlot() {
+  const traces = [];
+  for (const name of names()) {
+    for (const [field, axis] of [["rain", "y"], ["wind", "y2"]]) {
+      const series = data.locations[state.location][field][name];
+      if (!series) continue;
+      traces.push({x: series.t, y: series.v, yaxis: axis, name, mode: "lines+markers",
+                   line: {color: colour[name], width: name === data.benchmark ? 2.5 : 1.3}, marker: {size: 3},
+                   hovertemplate: `%{y:.2f} ${FIELDS[field].units}`});
+    }
+  }
+  traces.push(...meanTraces("rain", "y", false), ...meanTraces("wind", "y2", false));
+  Plotly.react("all-plot", traces, twoPanelLayout(560), plotConfig);
+}
+
+// ---- Maps
+
+function mapFrame() {
+  const field = data.maps[state.field], i = state.time, nlon = data.maps.lons.length;
+  let flat;
+  if (state.source === "mean") {
+    const frames = names().map((n) => field.values[n] && field.values[n][i]).filter(Boolean);
+    flat = frames.length ? frames[0].map((_, c) => {
+      let sum = 0, n = 0;
+      for (const f of frames) if (f[c] !== null) { sum += f[c]; n += 1; }
+      return n ? sum / n : null;
+    }) : null;
+  } else {
+    flat = field.values[state.source] && field.values[state.source][i];
+  }
+  if (!flat || flat.every((v) => v === null)) return null;
+  const z = [];
+  for (let r = 0; r < data.maps.lats.length; r++)
+    z.push(flat.slice(r * nlon, (r + 1) * nlon).map((v) => (v === null ? null : v / 10)));
+  return z;
+}
+
+function drawMap() {
+  const field = FIELDS[state.field], times = data.maps[state.field].times;
+  state.time = Math.min(state.time, times.length - 1);
+  $("map-time").max = times.length - 1;
+  $("map-time").value = state.time;
+  const what = state.field === "rain" ? `${rainLabel()} ending` : field.label;
+  $("map-time-label").textContent = `${what} ${fmtTime(times[state.time])}`;
+
+  const z = mapFrame();
+  const width = $("map-plot").clientWidth || 360;
+  const lons = data.maps.lons, lats = data.maps.lats;
+  const ratio = 1 / Math.cos((55 * Math.PI) / 180);
+  const traces = [{type: "heatmap", x: lons, y: lats, z: z || [[null]], zmin: 0, zmax: field.zmax,
+                   colorscale: field.scale, hoverongaps: false,
+                   colorbar: {thickness: 10, len: 0.8, title: {text: field.units, side: "right"}},
+                   hovertemplate: `%{z:.1f} ${field.units}<extra></extra>`},
+                  {x: data.coast.lon, y: data.coast.lat, mode: "lines", line: {color: css("--fg"), width: 0.8},
+                   hoverinfo: "skip"}];
+  const layout = baseLayout({
+    height: Math.round(width * 1.12), hovermode: "closest", margin: {l: 30, r: 10, t: 10, b: 24},
+    xaxis: {range: [lons[0] - 0.25, lons[lons.length - 1] + 0.25], showgrid: false, zeroline: false, constrain: "domain"},
+    yaxis: {range: [lats[0] - 0.25, lats[lats.length - 1] + 0.25], showgrid: false, zeroline: false,
+            scaleanchor: "x", scaleratio: ratio, constrain: "domain"},
+    annotations: z ? [] : [{text: "Not forecast at this time", xref: "paper", yref: "paper", x: 0.5, y: 0.5,
+                            showarrow: false, bgcolor: css("--card"), font: {size: 14}}],
+  });
+  Plotly.react("map-plot", traces, layout, Object.assign({}, plotConfig, {scrollZoom: false}));
+}
+
+function fillMapSources() {
+  const options = [["mean", "Mean of selected sources"], ...names().map((n) => [n, n])];
+  if (!options.some(([v]) => v === state.source)) state.source = "mean";
+  $("map-source").innerHTML = options.map(([v, label]) =>
+    `<option value="${v}"${v === state.source ? " selected" : ""}>${label}</option>`).join("");
+}
+
+$("map-source").addEventListener("change", (e) => { state.source = e.target.value; savePrefs(); drawMap(); });
+$("map-time").addEventListener("input", (e) => { state.time = +e.target.value; drawMap(); });
+$("prev").addEventListener("click", () => { state.time = Math.max(0, state.time - 1); drawMap(); });
+$("next").addEventListener("click", () => {
+  state.time = Math.min(data.maps[state.field].times.length - 1, state.time + 1); drawMap();
+});
+document.querySelectorAll("#map-field button").forEach((b) => b.addEventListener("click", () => {
+  const previous = data.maps[state.field].times[state.time];
+  state.field = b.dataset.field;
+  document.querySelectorAll("#map-field button").forEach((o) => o.classList.toggle("on", o === b));
+  // Keep the same valid time if the other field has it
+  const same = data.maps[state.field].times.indexOf(previous);
+  if (same >= 0) state.time = same;
+  savePrefs();
+  drawMap();
+}));
+
+// ---- Tables
+
+function drawTables() {
+  const s = data.scores || {}, rows = Object.keys(s.rain || {});
+  $("scores-note").textContent = rows.length
+    ? `Each source against the ${data.benchmark} over mainland UK, on a 0.5° grid at the times both forecast. ` +
+      `Rain is ${data.rain_hours}-hour totals (mm), wind is 10 m speed (m/s).`
+    : "No source shares any times with the benchmark.";
+  const cell = (r, k) => (r && r[k] !== null ? r[k].toFixed(2) : "–");
+  $("scores").innerHTML = rows.length ? `
+    <tr><th></th><th colspan="3">Rain (mm)</th><th colspan="3">Wind (m/s)</th></tr>
+    <tr><th>Source</th><th>Bias</th><th>RMSE</th><th>Corr.</th><th>Bias</th><th>RMSE</th><th>Corr.</th></tr>
+    ${rows.map((n) => `<tr><td>${n}</td>${["bias", "rmse", "corr"].map((k) => `<td>${cell(s.rain[n], k)}</td>`).join("")}
+      ${["bias", "rmse", "corr"].map((k) => `<td>${cell(s.wind[n], k)}</td>`).join("")}</tr>`).join("")}` : "";
+
+  const failed = data.failures || {};
+  const listed = data.sources.map((src) => `<tr><td>${src.name}${src.name === data.benchmark ? " (benchmark)" : ""}</td>
+      <td>${fmtRun(src.run)}</td><td>${fmtTime(src.end)}</td>
+      <td class="${failed[src.name] ? "warn" : ""}">${failed[src.name] ? "Latest run failed, showing previous" : "OK"}</td></tr>`);
+  const missing = Object.keys(failed).filter((n) => !data.sources.some((s) => s.name === n))
+    .map((n) => `<tr><td>${n}</td><td>–</td><td>–</td><td class="warn">Failed, left out</td></tr>`);
+  $("runs").innerHTML = `<tr><th>Source</th><th>Run</th><th>Valid to</th><th>Status</th></tr>${[...listed, ...missing].join("")}`;
+}
+
+// ---- Sources and location
+
+function savePrefs() {
+  const off = data.sources.map((s) => s.name).filter((n) => !selected.has(n));
+  store(PREFS_STORE, JSON.stringify({off, location: state.location, field: state.field, source: state.source}));
+}
+
+function loadPrefs() {
+  let prefs = {};
+  try { prefs = JSON.parse(stored(PREFS_STORE) || "{}") || {}; } catch (e) {}
+  const all = data.sources.map((s) => s.name);
+  selected = new Set(all.filter((n) => !(prefs.off || []).includes(n)));
+  const places = Object.keys(data.locations);
+  state.location = places.includes(prefs.location) ? prefs.location : places[0];
+  if (prefs.field in FIELDS) state.field = prefs.field;
+  if (prefs.source) state.source = prefs.source;
+  // Maps open at the next valid time from now
+  const now = new Date().toISOString().slice(0, 16), next = data.maps[state.field].times.findIndex((t) => t >= now);
+  state.time = next >= 0 ? next : 0;
+}
+
+function drawChips() {
+  $("chips").innerHTML = data.sources.map((s) => `
+    <label class="chip${selected.has(s.name) ? " on" : ""}" data-name="${s.name}">
+      <span class="dot" style="background:${colour[s.name]}"></span>${s.name}
+    </label>`).join("");
+  $("chips").querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
+    const name = chip.dataset.name;
+    selected.has(name) ? selected.delete(name) : selected.add(name);
+    update();
+  }));
+}
+
+function update() {
+  savePrefs();
+  drawChips();
+  fillMapSources();
+  drawMeanPlot();
+  drawAllPlot();
+  drawMap();
+}
+
+$("all").addEventListener("click", () => { selected = new Set(data.sources.map((s) => s.name)); update(); });
+$("none").addEventListener("click", () => { selected = new Set(); update(); });
+$("location").addEventListener("change", (e) => { state.location = e.target.value; update(); });
+
+function start() {
+  data.sources.forEach((s, i) => { colour[s.name] = COLOURS[i % COLOURS.length]; });
+  loadPrefs();
+  $("location").innerHTML = Object.keys(data.locations).map((p) =>
+    `<option${p === state.location ? " selected" : ""}>${p}</option>`).join("");
+  document.querySelectorAll("#map-field button").forEach((o) => o.classList.toggle("on", o.dataset.field === state.field));
+  const hoursOld = (Date.now() - new Date(data.built + "Z")) / 3.6e6;
+  $("built").innerHTML = `Updated ${fmtTime(data.built)}` +
+    (hoursOld > 12 ? ` <span class="warn">(${Math.round(hoursOld)} hours ago)</span>` : "");
+  $("login").hidden = true;
+  $("app").hidden = false;
+  drawTables();
+  update();
+}
+
+// A key remembered on this device unlocks straight away
+(async () => {
+  const remembered = stored(KEY_STORE);
+  if (!remembered) return;
+  try {
+    await unlock(fromB64(remembered), false);
+  } catch (e) {
+    if (e.name === "OperationError") store(KEY_STORE);  // the password has changed
+    $("error").textContent = e.name === "OperationError" ? "" : e.message;
+  }
+})();
+</script>
+</body>
+</html>

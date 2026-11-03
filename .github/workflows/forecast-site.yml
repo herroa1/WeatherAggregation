@@ -1,0 +1,65 @@
+# Rebuilds the password-protected forecast website every 3 hours and publishes it to GitHub Pages.
+# Needs repository secrets MET_OFFICE_API_KEY and SITE_PASSWORD, and Pages set to "GitHub Actions".
+name: Forecast website
+
+on:
+  schedule:
+    - cron: "15 */3 * * *"  # UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: forecast-site
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: website/requirements.txt
+
+      - run: pip install -r website/requirements.txt
+
+      # The forecast store from the last build, so only new runs are downloaded
+      - uses: actions/cache/restore@v4
+        with:
+          path: data/standard
+          key: forecast-store-${{ github.run_id }}
+          restore-keys: forecast-store-
+
+      - name: Refresh forecasts and build the site
+        env:
+          MET_OFFICE_API_KEY: ${{ secrets.MET_OFFICE_API_KEY }}
+          SITE_PASSWORD: ${{ secrets.SITE_PASSWORD }}
+        run: python -m website.build --data-dir data --out _site
+
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: data/standard
+          key: forecast-store-${{ github.run_id }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
