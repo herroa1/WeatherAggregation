@@ -3,7 +3,7 @@
 The Met Office UK model is the benchmark the other sources are compared against.
 """
 
-from .dwd import ICONEULoader
+from .dwd import ICOND2Loader, ICONEULoader
 from .ecmwf import ECMWFLoader
 from .gfs import GFSLoader
 from .met_office import MetOfficeGlobalLoader, MetOfficeLoader
@@ -26,10 +26,11 @@ def forecast_sources(data_dir="data", ecmwf_source="ecmwf"):
         GFSLoader(data_dir=data_dir, model="gfs"),
         GFSLoader(data_dir=data_dir, model="aigfs"),
         ICONEULoader(data_dir=data_dir),
+        ICOND2Loader(data_dir=data_dir),
         GDPSLoader(data_dir=data_dir),
     ]
     return {loader.name: loader for loader in loaders}
 
 
-__all__ = ["BENCHMARK", "ECMWFLoader", "GDPSLoader", "GFSLoader", "ICONEULoader", "MetOfficeGlobalLoader",
+__all__ = ["BENCHMARK", "ECMWFLoader", "GDPSLoader", "GFSLoader", "ICOND2Loader", "ICONEULoader", "MetOfficeGlobalLoader",
            "MetOfficeLoader", "forecast_sources"]

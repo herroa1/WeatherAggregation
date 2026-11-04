@@ -1,4 +1,4 @@
-"""Loader for DWD (German weather service) ICON-EU forecasts, from DWD's open data server.
+"""Loaders for DWD (German weather service) ICON-EU and ICON-D2 forecasts, from DWD's open data server.
 
 Free, with no account or API key needed (licence CC BY 4.0, credit Deutscher Wetterdienst):
 https://opendata.dwd.de/weather/nwp/icon-eu/grib/
@@ -12,6 +12,16 @@ downloaded are kept in the cache.
 Layout: `<HH>/<field, lower case>/icon-eu_europe_regular-lat-lon_single-level_<YYYYMMDDHH>_<step:03d>_<FIELD>.grib2.bz2`,
 one bzip2-compressed GRIB2 file per run, step and field. Fields use DWD's names, e.g. "T_2M",
 "U_10M", "V_10M", "TOT_PREC" (see https://www.dwd.de/DWD/forschung/nwv/fepub/icon_database_main.pdf).
+
+ICON-D2 is DWD's ~2 km model for Germany and its neighbours (https://opendata.dwd.de/weather/nwp/icon-d2/grib/),
+on a 0.02° grid covering 43.18°N-58.08°N, 3.94°W-20.34°E. The model's own area is rotated, so over
+the UK its western edge slants from ~1.7°W (49.5°N) to ~3.8°W (57°N) and its northern edge from
+~57.6°N (1.6°W) to ~57.9°N (4°E), with no data beyond them (NaN):
+London and eastern England are covered, Wales, the west and Scotland aren't. Runs are every 3 hours,
+all hourly to 48 h, appearing ~1-2 hours after the run time; only the latest of each run time is kept.
+Layout: `<HH>/<field, lower case>/icon-d2_germany_regular-lat-lon_single-level_<YYYYMMDDHH>_<step:03d>_2d_<field, lower case>.grib2.bz2`.
+Some fields (including TOT_PREC) also have 15-minute values: each hourly file then holds the hour
+and the next three quarter-hours.
 """
 
 from datetime import timedelta
@@ -20,6 +30,7 @@ from ._per_file import PerFileGribLoader
 from .standard import by_valid_time, crop, standard_dataset, standard_steps
 
 BASE_URL = "https://opendata.dwd.de/weather/nwp/icon-eu/grib"
+D2_URL = "https://opendata.dwd.de/weather/nwp/icon-d2/grib"
 
 
 class ICONEULoader(PerFileGribLoader):
@@ -49,3 +60,22 @@ class ICONEULoader(PerFileGribLoader):
         # "TOT_PREC" is kg m-2 (= mm) since the run started, including a zero field at step 0
         return standard_dataset(field("TOT_PREC"), field("U_10M"), field("V_10M"),
                                 source=self.name, run=run, step_hours=self.step_hours)
+
+
+class ICOND2Loader(ICONEULoader):
+    """DWD ICON-D2, a regional source: see `coverage`. Otherwise like `ICONEULoader`."""
+
+    name = "DWD ICON-D2"
+    max_step = 48
+    cache_name = "icon-d2"
+    # Where it has data everywhere (lon_min, lon_max, lat_min, lat_max); it also has some west of this
+    coverage = (-1.6, 4, 49.5, 57.5)
+
+    def file_url(self, run, step_hours, field):
+        return (f"{D2_URL}/{run:%H}/{field.lower()}/icon-d2_germany_regular-lat-lon_single-level_"
+                f"{run:%Y%m%d%H}_{step_hours:03d}_2d_{field.lower()}.grib2.bz2")
+
+    def open_file(self, path, step_hours):
+        ds = super().open_file(path, step_hours)
+        # Files with 15-minute values hold the hour and the next three quarter-hours: keep the hour
+        return ds.sel(step=timedelta(hours=step_hours)) if ds.step.ndim else ds

@@ -25,11 +25,13 @@ MAX_RUN_AGE = {
     "NOAA GFS": timedelta(hours=12),
     "NOAA AIGFS": timedelta(hours=14),
     "DWD ICON-EU": timedelta(hours=9),
+    "DWD ICON-D2": timedelta(hours=7),
     "Canada GDPS": timedelta(hours=20),
 }
 # Fields load_standard reads, for sources with one file per field
 PER_FILE_FIELDS = {
     "DWD ICON-EU": ["TOT_PREC", "U_10M", "V_10M"],
+    "DWD ICON-D2": ["TOT_PREC", "U_10M", "V_10M"],
     "Canada GDPS": ["Precip-Accum_Sfc", "WindU_AGL-10m", "WindV_AGL-10m"],
 }
 ARCHIVE_VARIABLES = ["precipitation_accumulation-PT01H", "wind_speed_at_10m", "wind_direction_at_10m"]

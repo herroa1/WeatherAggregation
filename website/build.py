@@ -34,14 +34,21 @@ from loaders.store import UK_EXTENT, ForecastStore
 HERE = Path(__file__).parent
 HORIZON_HOURS = 72
 RAIN_HOURS = 6
-# Maps are averaged onto this grid (degrees), every MAP_EVERY hours, to keep the data file small
+# UK maps are averaged onto this grid (degrees), every MAP_EVERY hours, to keep the data file small
 MAP_RES = 0.5
 MAP_EVERY = 3
+# London maps show each source at its own resolution, sampled (nearest grid point) onto this grid:
+# 0.02° lat x 0.03° lon is ~2.2 x 2.1 km, about the finest sources' spacing
+LONDON_EXTENT = (-0.55, 0.35, 51.25, 51.72)
+LONDON_RES = (0.02, 0.03)  # (lat, lon)
 # Mainland UK, which lies inside every source's grid: used for the scores
 SCORE_EXTENT = (-8, 2, 50, 59)
 LOCATIONS = {
-    "London": (51.51, -0.13), "Birmingham": (52.48, -1.90), "Manchester": (53.48, -2.24),
-    "Cardiff": (51.48, -3.18), "Edinburgh": (55.95, -3.19), "Belfast": (54.60, -5.93),
+    "Central London": (51.51, -0.13), "North London (Enfield)": (51.65, -0.08),
+    "East London (Romford)": (51.58, 0.18), "South London (Croydon)": (51.37, -0.10),
+    "West London (Heathrow)": (51.47, -0.45),
+    "Birmingham": (52.48, -1.90), "Manchester": (53.48, -2.24), "Cardiff": (51.48, -3.18),
+    "Edinburgh": (55.95, -3.19), "Belfast": (54.60, -5.93),
 }
 # Must match index.html. The salt is fixed so a key remembered on a phone works for later builds
 PBKDF2_ITERATIONS = 600_000
@@ -49,13 +56,48 @@ PBKDF2_SALT = b"uk-forecast-comparison"
 MIN_PASSWORD_LENGTH = 12
 
 
-def at_point(da, lat, lon):
-    """A field at the grid cell nearest (lat, lon), for 1D or 2D lat/lon grids."""
+def grid_km(da):
+    """A field's grid spacing (km, north-south), for 1D or 2D lat/lon grids."""
     if da.latitude.ndim == 1:
-        return da.sel(latitude=lat, longitude=lon, method="nearest")
-    dist = (da.latitude - lat) ** 2 + ((da.longitude - lon) * np.cos(np.radians(lat))) ** 2
-    y, x = np.unravel_index(np.argmin(dist.values), dist.shape)
-    return da.isel(y=y, x=x)
+        return float(abs(np.diff(da.latitude.values)).mean()) * 111.2
+    lat, lon = da.latitude.values, da.longitude.values
+    y, x = lat.shape[0] // 2, lat.shape[1] // 2
+    return float(np.hypot(lat[y + 1, x] - lat[y, x], (lon[y + 1, x] - lon[y, x]) * np.cos(np.radians(lat[y, x])))) * 111.2
+
+
+def sample_nearest(da, lats, lons):
+    """A field at each (lat, lon) of a regular grid, from the source's nearest grid point: dims
+    (valid_time, latitude, longitude). NaN where the source has no grid point within one grid spacing,
+    so a point outside its area (e.g. a regional source's) isn't given the value at its edge."""
+    lats, lons = np.asarray(lats, float), np.asarray(lons, float)
+    spacing = grid_km(da) / 111.2  # degrees of latitude
+    if da.latitude.ndim == 1:
+        out = da.sel(latitude=lats, longitude=lons, method="nearest")
+        near_lat = np.abs(out.latitude.values - lats) <= spacing
+        near_lon = np.abs(out.longitude.values - lons) * np.cos(np.radians(lats.mean())) <= spacing
+        out = out.assign_coords(latitude=lats, longitude=lons)
+        return out.where(xr.DataArray(near_lat[:, None] & near_lon[None, :], dims=("latitude", "longitude")))
+    # 2D lat/lon (the Met Office grid): brute-force nearest among points near the target grid
+    near = ((da.latitude >= lats.min() - 3 * spacing) & (da.latitude <= lats.max() + 3 * spacing)
+            & (da.longitude >= lons.min() - 5 * spacing) & (da.longitude <= lons.max() + 5 * spacing)).values
+    shape = (len(lats), len(lons))
+    if not near.any():
+        return xr.DataArray(np.full((da.valid_time.size, *shape), np.nan), dims=("valid_time", "latitude", "longitude"),
+                            coords={"valid_time": da.valid_time.values, "latitude": lats, "longitude": lons})
+    src_lat, src_lon = da.latitude.values[near], da.longitude.values[near]
+    tgt_lat, tgt_lon = (a.ravel() for a in np.meshgrid(lats, lons, indexing="ij"))
+    scale = np.cos(np.radians(tgt_lat.mean()))
+    dist = np.hypot(tgt_lat[:, None] - src_lat[None, :], (tgt_lon[:, None] - src_lon[None, :]) * scale)
+    nearest = dist.argmin(axis=1)
+    values = da.transpose("valid_time", ...).values[:, near][:, nearest]
+    values[:, dist[np.arange(len(nearest)), nearest] > spacing] = np.nan
+    return xr.DataArray(values.reshape(-1, *shape), dims=("valid_time", "latitude", "longitude"),
+                        coords={"valid_time": da.valid_time.values, "latitude": lats, "longitude": lons})
+
+
+def at_point(da, lat, lon):
+    """A field at the grid point nearest (lat, lon), or NaN if the source has none nearby (see `sample_nearest`)."""
+    return sample_nearest(da, [lat], [lon]).isel(latitude=0, longitude=0)
 
 
 def _iso(t):
@@ -68,11 +110,11 @@ def _series(da):
     return {"t": [_iso(t) for t in da.valid_time.values[ok]], "v": np.round(da.values[ok], 2).tolist()}
 
 
-def _map_frames(fields, times):
-    """Each source's field on the common grid at `times`, as tenths (ints), None where it has no data."""
+def _map_frames(fields, times, to_grid):
+    """Each source's field put on the map grid by to_grid, at `times`, as tenths (ints), None where it has no data."""
     out = {}
     for name, da in fields.items():
-        grid = regrid_to_box(da, UK_EXTENT, MAP_RES).reindex(valid_time=times)
+        grid = to_grid(da).reindex(valid_time=times)
         tenths = np.round(grid.values * 10).reshape(len(times), -1)
         out[name] = [[None if np.isnan(v) else int(v) for v in frame] for frame in tenths]
     return out
@@ -104,30 +146,44 @@ def _scores(fields):
     return rows
 
 
+def _centres(extent, lat_res, lon_res):
+    """(lats, lons) of the cell centres of a regular grid covering extent."""
+    lon_min, lon_max, lat_min, lat_max = extent
+    return (np.arange(lat_min + lat_res / 2, lat_max, lat_res).round(4),
+            np.arange(lon_min + lon_res / 2, lon_max, lon_res).round(4))
+
+
+def _maps(rain, wind, lats, lons, to_grid, outline):
+    """One map area's data: its grid, outline, and each field's frames at every MAP_EVERY hours."""
+    out = {"lats": lats.tolist(), "lons": lons.tolist(), "outline": json.loads((HERE / outline).read_text())}
+    for field, values in [("rain", rain), ("wind", wind)]:
+        times = _map_times(values)
+        out[field] = {"times": [_iso(t) for t in times], "values": _map_frames(values, times, to_grid)}
+    return out
+
+
 def site_data(forecasts, failures=None, built=None):
     """Everything the page shows, as JSON-ready data, from standard forecasts (benchmark first)."""
     rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in forecasts.items()}
     wind = {name: wind_speed(ds) for name, ds in forecasts.items()}
-    lon_min, lon_max, lat_min, lat_max = UK_EXTENT
-    maps = {"lons": np.arange(lon_min + MAP_RES / 2, lon_max, MAP_RES).round(3).tolist(),
-            "lats": np.arange(lat_min + MAP_RES / 2, lat_max, MAP_RES).round(3).tolist()}
-    for field, values in [("rain", rain), ("wind", wind)]:
-        times = _map_times(values)
-        maps[field] = {"times": [_iso(t) for t in times], "values": _map_frames(values, times)}
     benchmark = forecasts.get(BENCHMARK)
     return {
         "built": _iso(built or datetime.now(timezone.utc).replace(tzinfo=None)),
         "benchmark": BENCHMARK,
         "benchmark_end": _iso(benchmark.valid_time.values[-1]) if benchmark is not None else None,
         "rain_hours": RAIN_HOURS,
-        "sources": [{"name": name, "run": _iso(run_time(ds)), "end": _iso(ds.valid_time.values[-1])}
+        "sources": [{"name": name, "run": _iso(run_time(ds)), "end": _iso(ds.valid_time.values[-1]),
+                     "grid_km": round(grid_km(ds), 1)}
                     for name, ds in forecasts.items()],
         "failures": dict(failures or {}),
         "locations": {place: {"rain": {name: _series(at_point(da, *where)) for name, da in rain.items()},
                               "wind": {name: _series(at_point(da, *where)) for name, da in wind.items()}}
                       for place, where in LOCATIONS.items()},
-        "maps": maps,
-        "coast": json.loads((HERE / "uk_coastline.json").read_text()),
+        "maps": {"uk": _maps(rain, wind, *_centres(UK_EXTENT, MAP_RES, MAP_RES),
+                             lambda da: regrid_to_box(da, UK_EXTENT, MAP_RES), "uk_coastline.json"),
+                 "london": _maps(rain, wind, *_centres(LONDON_EXTENT, *LONDON_RES),
+                                 lambda da, ll=_centres(LONDON_EXTENT, *LONDON_RES): sample_nearest(da, *ll),
+                                 "london_outline.json")},
         "scores": {"rain": _scores(rain), "wind": _scores(wind)} if benchmark is not None else {},
     }
 

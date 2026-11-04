@@ -45,9 +45,12 @@ class PerFileGribLoader:
             download_to(out, url, timeout=120, decompress_bz2=url.endswith(".bz2"))
         return out
 
+    def open_file(self, path, step_hours):
+        """One downloaded file (of step step_hours) as a Dataset."""
+        return xr.open_dataset(path, engine="cfgrib", backend_kwargs={"indexpath": ""})
+
     def load_run(self, run, steps, field):
         """One run's forecast for a field over several steps, stacked along "step", with longitudes in -180-180."""
-        paths = [self.download(run, s, field) for s in steps]
-        datasets = [xr.open_dataset(p, engine="cfgrib", backend_kwargs={"indexpath": ""}) for p in paths]
+        datasets = [self.open_file(self.download(run, s, field), s) for s in steps]
         ds = xr.concat(datasets, dim="step", coords="different", compat="equals", join="exact")
         return shift_longitude(ds)

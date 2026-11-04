@@ -25,11 +25,21 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = Path(os.environ.get("WEATHER_TEST_DATA", ROOT / "latestForecasts" / "data"))
 FIXTURES = Path(__file__).parent / "fixtures"
 
-# Mainland UK, which lies inside every source's grid (the Met Office grid is curved, so misses UK_EXTENT's corners)
+# Mainland UK, which lies inside every UK-wide source's grid (the Met Office grid is curved, so misses UK_EXTENT's corners)
 CORE_UK = (-8, 2, 50, 59)
 
 SOURCE_NAMES = list(forecast_sources())
 ALL_NAMES = [BENCHMARK, *SOURCE_NAMES]
+
+
+def covered_area(name):
+    """The part of mainland UK a source has data everywhere in: CORE_UK, or less for a regional source
+    (see `coverage` in `loaders.standard`)."""
+    coverage = getattr(forecast_sources().get(name), "coverage", None)
+    if coverage is None:
+        return CORE_UK
+    (a0, a1, a2, a3), (b0, b1, b2, b3) = CORE_UK, coverage
+    return max(a0, b0), min(a1, b1), max(a2, b2), min(a3, b3)
 
 
 def pytest_addoption(parser):

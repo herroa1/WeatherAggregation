@@ -6,11 +6,13 @@ No network access; the index files in fixtures/ are trimmed copies of real ones.
 import bz2
 from datetime import datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 import requests
+import xarray as xr
 
 from conftest import FIXTURES
-from loaders import ECMWFLoader, GDPSLoader, GFSLoader, ICONEULoader, MetOfficeGlobalLoader
+from loaders import ECMWFLoader, GDPSLoader, GFSLoader, ICOND2Loader, ICONEULoader, MetOfficeGlobalLoader
 from loaders._http import download_to, session
 from loaders.standard import last_step_by, standard_steps
 
@@ -146,6 +148,23 @@ def test_icon_eu_url():
         "icon-eu_europe_regular-lat-lon_single-level_2026102200_007_TOT_PREC.grib2.bz2")
 
 
+def test_icon_d2_url():
+    assert ICOND2Loader().file_url(RUN, 7, "TOT_PREC") == (
+        "https://opendata.dwd.de/weather/nwp/icon-d2/grib/00/tot_prec/"
+        "icon-d2_germany_regular-lat-lon_single-level_2026102200_007_2d_tot_prec.grib2.bz2")
+
+
+def test_icon_d2_keeps_the_hour_from_files_with_15_minute_values(tmp_path, monkeypatch):
+    steps = pd.to_timedelta([420, 435, 450, 465], unit="min")
+    quarter_hourly = xr.Dataset({"tp": ("step", [1.0, 2.0, 3.0, 4.0])}, coords={"step": steps})
+    monkeypatch.setattr(xr, "open_dataset", lambda *args, **kwargs: quarter_hourly)
+    assert float(ICOND2Loader().open_file(tmp_path / "x.grib2", 7).tp) == 1.0
+
+
+def test_icon_d2_stops_at_48_hours():
+    assert last_step_by(ICOND2Loader(), 72) == 48
+
+
 def test_gdps_url():
     assert GDPSLoader().file_url(RUN, 7, "WindU_AGL-10m") == (
         "https://dd.weather.gc.ca/20261022/WXO-DD/model_gdps/15km/00/007/"
@@ -170,9 +189,11 @@ def test_truncated_bz2_download_leaves_no_file(fake, tmp_path):
 
 # --- Shared behaviour ------------------------------------------------------------------------
 
-ALL_LOADERS = [ECMWFLoader(), GFSLoader(), GFSLoader(model="aigfs"), ICONEULoader(), GDPSLoader(),
+ALL_LOADERS = [ECMWFLoader(), GFSLoader(), GFSLoader(model="aigfs"), ICONEULoader(), ICOND2Loader(), GDPSLoader(),
                MetOfficeGlobalLoader()]
-ALL_IDS = ["ECMWF", "GFS", "AIGFS", "ICON-EU", "GDPS", "Met Office global"]
+ALL_IDS = ["ECMWF", "GFS", "AIGFS", "ICON-EU", "ICON-D2", "GDPS", "Met Office global"]
+# Short-range sources, which stop before 72 h
+SHORT_RANGE = {"ICON-D2"}
 
 
 def _newest_run(run_hours):
@@ -216,8 +237,9 @@ def test_sources_without_later_steps_stop_at_max_step():
     assert last_step_by(ECMWFLoader(model="aifs-single"), 71) == 66
 
 
-@pytest.mark.parametrize("loader", ALL_LOADERS, ids=ALL_IDS)
-def test_every_source_reaches_72_hours(loader):
+@pytest.mark.parametrize("loader", [l for l, i in zip(ALL_LOADERS, ALL_IDS) if i not in SHORT_RANGE],
+                         ids=[i for i in ALL_IDS if i not in SHORT_RANGE])
+def test_every_other_source_reaches_72_hours(loader):
     assert last_step_by(loader, 72) == 72
 
 

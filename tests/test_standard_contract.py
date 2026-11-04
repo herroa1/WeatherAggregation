@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from conftest import CORE_UK
+from conftest import covered_area
 from loaders.standard import UNITS, period_totals, run_time, wind_speed
 
 # GRIB packing rounds values to steps set by the whole (global) field's range, e.g. 0.06-0.12 mm for
@@ -54,8 +54,16 @@ def test_coordinates_in_range(forecast):
     assert ((lat >= -90) & (lat <= 90)).all()
 
 
+def _in_area(da, name):
+    """Where a field is within the area its source covers fully (mainland UK, or less for a regional source)."""
+    lon_min, lon_max, lat_min, lat_max = covered_area(name)
+    lat, lon = da.latitude, da.longitude
+    return (lon >= lon_min) & (lon <= lon_max) & (lat >= lat_min) & (lat <= lat_max)
+
+
 def test_covers_mainland_uk(forecast):
-    lon_min, lon_max, lat_min, lat_max = CORE_UK
+    """Or, for a regional source, its area (see `coverage` in `loaders.standard`)."""
+    lon_min, lon_max, lat_min, lat_max = covered_area(forecast.attrs["source"])
     lat, lon = (a.values.ravel() for a in xr.broadcast(forecast.latitude, forecast.longitude))
     for corner_lon, corner_lat in [(lon_min, lat_min), (lon_min, lat_max), (lon_max, lat_min), (lon_max, lat_max)]:
         nearest = np.min(np.hypot(lat - corner_lat, lon - corner_lon))
@@ -63,12 +71,12 @@ def test_covers_mainland_uk(forecast):
 
 
 def test_rain_starts_at_zero_and_never_decreases(forecast):
-    rain = forecast.rain_mm
-    np.testing.assert_allclose(rain.isel(valid_time=0), 0, atol=RAIN_TOLERANCE)
+    rain = forecast.rain_mm  # NaN where a regional source has no data, which these skip
+    assert float(abs(rain.isel(valid_time=0)).max()) <= RAIN_TOLERANCE, "rain doesn't start at zero"
     # A real decrease means a period total (e.g. a resetting bucket) was taken instead of the total since the run started
     drop = -rain.diff("valid_time")
     allowed = RAIN_TOLERANCE + RAIN_REL_TOLERANCE * rain.isel(valid_time=slice(None, -1)).values
-    assert (drop.values <= allowed).all(), f"rain total decreases by up to {float(drop.max()):.2f} mm"
+    assert not (drop.values > allowed).any(), f"rain total decreases by up to {float(drop.max()):.2f} mm"
 
 
 def test_values_are_plausible(forecast):
@@ -83,7 +91,9 @@ def test_values_are_plausible(forecast):
 @pytest.mark.parametrize("name", ["u10", "v10", "rain_mm"])
 def test_fields_have_data(forecast, name):
     da = forecast[name]
-    assert float(np.isfinite(da).mean()) > 0.99, "more than 1% of values missing"
+    inside = _in_area(da, forecast.attrs["source"])
+    assert float(np.isfinite(da).where(inside).mean()) > 0.99, "more than 1% of values missing"
+    da = da.where(inside)
     if name != "rain_mm":  # rain can genuinely be zero everywhere early in a run
         spread = da.std([d for d in da.dims if d != "valid_time"])
         assert float(spread.min()) > 0, "a field is constant across the grid"

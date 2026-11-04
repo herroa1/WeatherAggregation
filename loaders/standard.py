@@ -18,6 +18,9 @@ Every forecast source (see `loaders.forecast_sources`) has:
   apart if the source sets it (e.g. hourly to 54 h, then 3-hourly), or not available otherwise
 - `run_hours`: spacing of its runs (e.g. 6 for 00/06/12/18 UTC)
 - `retention`: roughly how long its server keeps a run (a timedelta), or None if kept for years
+- `coverage` (regional sources only): (lon_min, lon_max, lat_min, lat_max) it has data everywhere in;
+  it can also have some data outside this, and is NaN where it has none. Sources without it cover
+  the whole UK
 - `latest_run(step_hours)`: most recent run with that step published
 - `load_standard(run, last_step, extent=None)`: a run's standard forecast for steps 0 to last_step
 """

@@ -103,6 +103,10 @@
     <section class="card">
       <h2>Maps</h2>
       <div class="row" style="margin: 8px 0">
+        <div class="seg" id="map-area">
+          <button type="button" data-area="uk" class="on">UK</button>
+          <button type="button" data-area="london">London</button>
+        </div>
         <div class="seg" id="map-field">
           <button type="button" data-field="rain" class="on">Rain</button>
           <button type="button" data-field="wind">Wind</button>
@@ -118,6 +122,7 @@
         <button type="button" id="next" aria-label="Later">&#8250;</button>
       </div>
       <div id="map-plot" class="plot"></div>
+      <div class="muted" id="map-note"></div>
     </section>
 
     <section class="card">
@@ -130,7 +135,7 @@
       <h2>Runs</h2>
       <div class="scroll"><table id="runs"></table></div>
       <p class="muted">Data: Met Office; ECMWF (CC BY 4.0); NOAA; Deutscher Wetterdienst (CC BY 4.0);
-        Environment and Climate Change Canada (Open Government Licence – Canada). Coastline: Natural Earth.</p>
+        Environment and Climate Change Canada (Open Government Licence – Canada). Coastline, boroughs and Thames: Natural Earth.</p>
     </section>
   </div>
 </main>
@@ -143,13 +148,18 @@ const PBKDF2_SALT = "uk-forecast-comparison";
 const KEY_STORE = "wx-key", PREFS_STORE = "wx-prefs";
 const COLOURS = ["#636efa", "#EF553B", "#00cc96", "#ab63fa", "#FFA15A", "#19d3f3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52"];
 // Rain: clear when dry, so the coastline shows through
-const RAIN_SCALE = [[0, "rgba(0,0,0,0)"], [0.01, "rgba(198,219,239,0.9)"], [0.2, "#6baed6"], [0.5, "#2171b5"], [1, "#08306b"]];
+const RAIN_SCALE = [[0, "rgba(198,219,239,0)"], [0.01, "rgba(198,219,239,0.9)"], [0.2, "#6baed6"], [0.5, "#2171b5"], [1, "#08306b"]];
 const FIELDS = {rain: {units: "mm", label: null, zmax: 10, scale: RAIN_SCALE},
                 wind: {units: "m/s", label: "10 m wind speed", zmax: 20, scale: "Viridis"}};
 
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
-let data = null, colour = {}, selected = new Set(), state = {location: null, field: "rain", source: "mean", time: 0};
+let data = null, colour = {}, selected = new Set(),
+    state = {location: null, area: "uk", field: "rain", source: "mean", time: 0};
+const AREAS = {
+  uk: {name: "UK", midLat: 55, note: "Each source averaged onto a 0.5° grid (about 55 × 32 km), so sources can be compared and averaged."},
+  london: {name: "London", midLat: 51.5, note: "Each source at its own resolution: coarse models show as large blocks. Colours are scaled to London's highest value."},
+};
 
 function store(key, value) {
   try { value === undefined ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch (e) {}
@@ -303,7 +313,7 @@ function drawAllPlot() {
 // ---- Maps
 
 function mapFrame() {
-  const field = data.maps[state.field], i = state.time, nlon = data.maps.lons.length;
+  const area = data.maps[state.area], field = area[state.field], i = state.time, nlon = area.lons.length;
   let flat;
   if (state.source === "mean") {
     const frames = names().map((n) => field.values[n] && field.values[n][i]).filter(Boolean);
@@ -317,13 +327,25 @@ function mapFrame() {
   }
   if (!flat || flat.every((v) => v === null)) return null;
   const z = [];
-  for (let r = 0; r < data.maps.lats.length; r++)
+  for (let r = 0; r < area.lats.length; r++)
     z.push(flat.slice(r * nlon, (r + 1) * nlon).map((v) => (v === null ? null : v / 10)));
   return z;
 }
 
+// The London maps' colour scale: up to the selected sources' highest value at any time (rounded up),
+// so London's smaller differences show, and colours still compare across sources and times
+function londonMax(field) {
+  let max = 0;
+  for (const name of names()) for (const frame of data.maps.london[field].values[name] || [])
+    for (const v of frame) if (v !== null && v > max) max = v;
+  max /= 10;
+  const step = Math.pow(10, Math.floor(Math.log10(Math.max(max, 1e-6))));
+  const nice = [1, 2, 2.5, 5, 10].find((m) => m * step >= max) * step;
+  return Math.max(nice, field === "rain" ? 1 : 5);
+}
+
 function drawMap() {
-  const field = FIELDS[state.field], times = data.maps[state.field].times;
+  const area = data.maps[state.area], field = FIELDS[state.field], times = area[state.field].times;
   state.time = Math.min(state.time, times.length - 1);
   $("map-time").max = times.length - 1;
   $("map-time").value = state.time;
@@ -332,23 +354,36 @@ function drawMap() {
 
   const z = mapFrame();
   const width = $("map-plot").clientWidth || 360;
-  const lons = data.maps.lons, lats = data.maps.lats;
-  const ratio = 1 / Math.cos((55 * Math.PI) / 180);
-  const traces = [{type: "heatmap", x: lons, y: lats, z: z || [[null]], zmin: 0, zmax: field.zmax,
+  const lons = area.lons, lats = area.lats;
+  const dLon = lons[1] - lons[0], dLat = lats[1] - lats[0];
+  const ratio = 1 / Math.cos((AREAS[state.area].midLat * Math.PI) / 180);
+  const lonSpan = lons[lons.length - 1] - lons[0] + dLon, latSpan = lats[lats.length - 1] - lats[0] + dLat;
+  const isLondon = state.area === "london";
+  const zmax = isLondon ? londonMax(state.field) : field.zmax;
+  const traces = [{type: "heatmap", x: lons, y: lats, z: z || [[null]], zmin: 0, zmax,
                    colorscale: field.scale, hoverongaps: false,
                    colorbar: {thickness: 10, len: 0.8, title: {text: field.units, side: "right"}},
                    hovertemplate: `%{z:.1f} ${field.units}<extra></extra>`},
-                  {x: data.coast.lon, y: data.coast.lat, mode: "lines", line: {color: css("--fg"), width: 0.8},
-                   hoverinfo: "skip"}];
+                  {x: area.outline.lon, y: area.outline.lat, mode: "lines",
+                   line: {color: css("--fg"), width: isLondon ? 0.6 : 0.8}, opacity: isLondon ? 0.6 : 1, hoverinfo: "skip"}];
+  if (area.outline.river)
+    traces.push({x: area.outline.river.lon, y: area.outline.river.lat, mode: "lines",
+                 line: {color: css("--accent"), width: 2.5}, hoverinfo: "skip"});
   const layout = baseLayout({
-    height: Math.round(width * 1.12), hovermode: "closest", margin: {l: 30, r: 10, t: 10, b: 24},
-    xaxis: {range: [lons[0] - 0.25, lons[lons.length - 1] + 0.25], showgrid: false, zeroline: false, constrain: "domain"},
-    yaxis: {range: [lats[0] - 0.25, lats[lats.length - 1] + 0.25], showgrid: false, zeroline: false,
-            scaleanchor: "x", scaleratio: ratio, constrain: "domain"},
+    height: Math.round((width - 90) * (latSpan * ratio) / lonSpan) + 40, hovermode: "closest",
+    margin: {l: 40, r: 10, t: 10, b: 30},
+    xaxis: {range: [lons[0] - dLon / 2, lons[lons.length - 1] + dLon / 2], showgrid: false, zeroline: false,
+            constrain: "domain", fixedrange: true},
+    yaxis: {range: [lats[0] - dLat / 2, lats[lats.length - 1] + dLat / 2], showgrid: false, zeroline: false,
+            scaleanchor: "x", scaleratio: ratio, constrain: "domain", fixedrange: true},
     annotations: z ? [] : [{text: "Not forecast at this time", xref: "paper", yref: "paper", x: 0.5, y: 0.5,
                             showarrow: false, bgcolor: css("--card"), font: {size: 14}}],
   });
   Plotly.react("map-plot", traces, layout, Object.assign({}, plotConfig, {scrollZoom: false}));
+
+  const source = data.sources.find((s) => s.name === state.source);
+  const which = source ? `${source.name}: grid about ${source.grid_km} km.` : `Mean of the ${names().length} selected sources.`;
+  $("map-note").textContent = `${which} ${AREAS[state.area].note}`;
 }
 
 function fillMapSources() {
@@ -362,18 +397,22 @@ $("map-source").addEventListener("change", (e) => { state.source = e.target.valu
 $("map-time").addEventListener("input", (e) => { state.time = +e.target.value; drawMap(); });
 $("prev").addEventListener("click", () => { state.time = Math.max(0, state.time - 1); drawMap(); });
 $("next").addEventListener("click", () => {
-  state.time = Math.min(data.maps[state.field].times.length - 1, state.time + 1); drawMap();
+  state.time = Math.min(data.maps[state.area][state.field].times.length - 1, state.time + 1); drawMap();
 });
-document.querySelectorAll("#map-field button").forEach((b) => b.addEventListener("click", () => {
-  const previous = data.maps[state.field].times[state.time];
-  state.field = b.dataset.field;
-  document.querySelectorAll("#map-field button").forEach((o) => o.classList.toggle("on", o === b));
-  // Keep the same valid time if the other field has it
-  const same = data.maps[state.field].times.indexOf(previous);
+// Switching the field or area keeps the same valid time where the other one has it
+function switchMap(key, value, group) {
+  const previous = data.maps[state.area][state.field].times[state.time];
+  state[key] = value;
+  document.querySelectorAll(`#${group} button`).forEach((o) => o.classList.toggle("on", o.dataset[key] === value));
+  const same = data.maps[state.area][state.field].times.indexOf(previous);
   if (same >= 0) state.time = same;
   savePrefs();
   drawMap();
-}));
+}
+document.querySelectorAll("#map-field button").forEach((b) =>
+  b.addEventListener("click", () => switchMap("field", b.dataset.field, "map-field")));
+document.querySelectorAll("#map-area button").forEach((b) =>
+  b.addEventListener("click", () => switchMap("area", b.dataset.area, "map-area")));
 
 // ---- Tables
 
@@ -403,7 +442,8 @@ function drawTables() {
 
 function savePrefs() {
   const off = data.sources.map((s) => s.name).filter((n) => !selected.has(n));
-  store(PREFS_STORE, JSON.stringify({off, location: state.location, field: state.field, source: state.source}));
+  store(PREFS_STORE, JSON.stringify({off, location: state.location, area: state.area, field: state.field,
+                                     source: state.source}));
 }
 
 function loadPrefs() {
@@ -414,9 +454,11 @@ function loadPrefs() {
   const places = Object.keys(data.locations);
   state.location = places.includes(prefs.location) ? prefs.location : places[0];
   if (prefs.field in FIELDS) state.field = prefs.field;
+  if (prefs.area in AREAS) state.area = prefs.area;
   if (prefs.source) state.source = prefs.source;
   // Maps open at the next valid time from now
-  const now = new Date().toISOString().slice(0, 16), next = data.maps[state.field].times.findIndex((t) => t >= now);
+  const now = new Date().toISOString().slice(0, 16);
+  const next = data.maps[state.area][state.field].times.findIndex((t) => t >= now);
   state.time = next >= 0 ? next : 0;
 }
 
@@ -451,6 +493,7 @@ function start() {
   $("location").innerHTML = Object.keys(data.locations).map((p) =>
     `<option${p === state.location ? " selected" : ""}>${p}</option>`).join("");
   document.querySelectorAll("#map-field button").forEach((o) => o.classList.toggle("on", o.dataset.field === state.field));
+  document.querySelectorAll("#map-area button").forEach((o) => o.classList.toggle("on", o.dataset.area === state.area));
   const hoursOld = (Date.now() - new Date(data.built + "Z")) / 3.6e6;
   $("built").innerHTML = `Updated ${fmtTime(data.built)}` +
     (hoursOld > 12 ? ` <span class="warn">(${Math.round(hoursOld)} hours ago)</span>` : "");

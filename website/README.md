@@ -9,6 +9,10 @@ hosted on GitHub Pages.
   shows, encrypted with the site password (AES-256-GCM, key from PBKDF2-SHA256). The page decrypts it
   in the browser. Anyone can download `forecast.bin` and guess passwords offline, so use a long
   passphrase (at least 12 characters, ideally four or more random words).
+- Maps cover the UK (every source averaged onto a 0.5° grid, so they can be compared and averaged) or
+  London (each source at its own resolution, sampled onto a ~2 km grid, with borough outlines and the
+  Thames; colours scaled to London's range). Charts are for five areas of London and five UK cities.
+  Map outlines come from Natural Earth, written by [`outlines.py`](outlines.py).
 - Source picking, the means (at each time, the average of the picked sources that forecast it) and
   the maps are all worked out in the browser, so they update as you pick sources.
 

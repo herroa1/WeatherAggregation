@@ -1,4 +1,5 @@
-"""Each source agrees roughly with the Met Office benchmark over mainland UK.
+"""Each source agrees roughly with the Met Office benchmark over mainland UK (or, for a regional source,
+the part it covers).
 
 The tolerances are loose on purpose: these catch broken data (wrong units, flipped or shifted grids,
 the wrong field), not judge forecast skill. Both forecasts are averaged onto a common 0.5° grid and
@@ -22,7 +23,9 @@ def _on_common_grid(benchmark, other, field):
     a, b = xr.align(a, b, join="inner")
     if a.valid_time.size == 0:
         pytest.fail("no valid times shared with the benchmark")
-    return a, b
+    # Only where both have data, so a regional source is compared over its own area
+    both = np.isfinite(a) & np.isfinite(b)
+    return a.where(both), b.where(both)
 
 
 def _correlation(a, b):
