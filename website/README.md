@@ -13,8 +13,13 @@ hosted on GitHub Pages.
   London (each source at its own resolution, sampled onto a ~2 km grid, with borough outlines and the
   Thames; colours scaled to London's range). Charts are for five areas of London and five UK cities.
   Map outlines come from Natural Earth, written by [`outlines.py`](outlines.py).
-- Source picking, the means (at each time, the average of the picked sources that forecast it) and
-  the maps are all worked out in the browser, so they update as you pick sources.
+- Sources with steps more than an hour apart (ECMWF IFS, AIFS, AIGFS, and Met Office global later on)
+  are interpolated onto every hour, so the means use every source at every hour. Interpolated values
+  count for less, most in the middle of a gap, with weights from inverse-variance weighting. The
+  weights are measured afresh each build from the forecasts themselves, so no observations are needed
+  (see [`blend.py`](blend.py)). The scores only use each source's real times.
+- Source picking, the means (at each time, the weighted average of the picked sources) and the maps
+  are all worked out in the browser, so they update as you pick sources.
 
 ## Setting up
 

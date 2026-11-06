@@ -90,13 +90,13 @@
 
     <section class="card">
       <h2>Mean of selected sources</h2>
-      <div class="muted">At each time, the average of the picked sources forecasting that time. The shading spans the lowest to highest of them.</div>
+      <div class="muted">At each time, the average of the picked sources. Sources with steps more than an hour apart are interpolated between them, and those values count for a little less, most in the middle of a gap. The shading spans the lowest to highest of them.</div>
       <div id="mean-plot" class="plot"></div>
     </section>
 
     <section class="card">
       <h2>All selected sources</h2>
-      <div class="muted">Each source, with the mean in bold. Hover or tap for values.</div>
+      <div class="muted">Each source, with the mean in bold. Dots mark each source's own forecast times; lines between them are interpolated. Hover or tap for values.</div>
       <div id="all-plot" class="plot"></div>
     </section>
 
@@ -234,20 +234,23 @@ const plotConfig = {responsive: true, displaylogo: false, modeBarButtonsToRemove
 
 function names() { return data.sources.map((s) => s.name).filter((n) => selected.has(n)); }
 
+// Weighted by each value's weight: below 1 where a source is interpolated (see website/blend.py)
 function meanSeries(field) {
   const at = new Map();
   for (const name of names()) {
     const series = data.locations[state.location][field][name];
     if (!series) continue;
     series.t.forEach((t, i) => {
-      const v = series.v[i];
-      const e = at.get(t) || {sum: 0, n: 0, min: Infinity, max: -Infinity};
-      e.sum += v; e.n += 1; e.min = Math.min(e.min, v); e.max = Math.max(e.max, v);
+      const v = series.v[i], w = series.w ? series.w[i] : 1;
+      const e = at.get(t) || {sum: 0, weight: 0, n: 0, interpolated: 0, min: Infinity, max: -Infinity};
+      e.sum += w * v; e.weight += w; e.n += 1; e.interpolated += w < 1 ? 1 : 0;
+      e.min = Math.min(e.min, v); e.max = Math.max(e.max, v);
       at.set(t, e);
     });
   }
   const t = [...at.keys()].sort();
-  return {t, mean: t.map((k) => at.get(k).sum / at.get(k).n), n: t.map((k) => at.get(k).n),
+  const note = (e) => e.interpolated ? `mean of ${e.n}, ${e.interpolated} interpolated` : `mean of ${e.n}`;
+  return {t, mean: t.map((k) => at.get(k).sum / at.get(k).weight), note: t.map((k) => note(at.get(k))),
           min: t.map((k) => at.get(k).min), max: t.map((k) => at.get(k).max)};
 }
 
@@ -258,9 +261,9 @@ function meanTraces(field, axis, withBand) {
     traces.push({x: m.t, y: m.min, yaxis: axis, mode: "lines", line: {width: 0}, fill: "tonexty",
                  fillcolor: css("--band"), hoverinfo: "skip"});
   }
-  traces.push({x: m.t, y: m.mean, customdata: m.n, yaxis: axis, name: "Mean", mode: "lines",
+  traces.push({x: m.t, y: m.mean, customdata: m.note, yaxis: axis, name: "Mean", mode: "lines",
                line: {color: css("--mean"), width: 3},
-               hovertemplate: `%{y:.2f} ${units} (mean of %{customdata})<extra>Mean</extra>`});
+               hovertemplate: `%{y:.2f} ${units} (%{customdata})<extra>Mean</extra>`});
   return traces;
 }
 
@@ -301,9 +304,13 @@ function drawAllPlot() {
     for (const [field, axis] of [["rain", "y"], ["wind", "y2"]]) {
       const series = data.locations[state.location][field][name];
       if (!series) continue;
+      // Dots only at the source's own times, not where it's interpolated
+      const real = series.w ? series.w.map((w) => w === 1) : series.t.map(() => true);
       traces.push({x: series.t, y: series.v, yaxis: axis, name, mode: "lines+markers",
-                   line: {color: colour[name], width: name === data.benchmark ? 2.5 : 1.3}, marker: {size: 3},
-                   hovertemplate: `%{y:.2f} ${FIELDS[field].units}`});
+                   line: {color: colour[name], width: name === data.benchmark ? 2.5 : 1.3},
+                   marker: {size: real.map((r) => (r ? 3 : 0))},
+                   customdata: real.map((r) => (r ? "" : " (interpolated)")),
+                   hovertemplate: `%{y:.2f} ${FIELDS[field].units}%{customdata}`});
     }
   }
   traces.push(...meanTraces("rain", "y", false), ...meanTraces("wind", "y2", false));
@@ -316,11 +323,13 @@ function mapFrame() {
   const area = data.maps[state.area], field = area[state.field], i = state.time, nlon = area.lons.length;
   let flat;
   if (state.source === "mean") {
-    const frames = names().map((n) => field.values[n] && field.values[n][i]).filter(Boolean);
-    flat = frames.length ? frames[0].map((_, c) => {
-      let sum = 0, n = 0;
-      for (const f of frames) if (f[c] !== null) { sum += f[c]; n += 1; }
-      return n ? sum / n : null;
+    // Weighted like the charts' means: interpolated frames count for a little less
+    const frames = names().filter((n) => field.values[n] && field.values[n][i])
+      .map((n) => ({f: field.values[n][i], w: field.weights && field.weights[n] ? field.weights[n][i] : 1}));
+    flat = frames.length ? frames[0].f.map((_, c) => {
+      let sum = 0, weight = 0;
+      for (const {f, w} of frames) if (f[c] !== null) { sum += w * f[c]; weight += w; }
+      return weight ? sum / weight : null;
     }) : null;
   } else {
     flat = field.values[state.source] && field.values[state.source][i];

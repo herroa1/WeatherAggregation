@@ -111,6 +111,26 @@ def period_totals(ds, hours):
     return totals.clip(min=0)
 
 
+def to_hourly(ds):
+    """A standard forecast linearly interpolated in time onto every hour from its first to last valid
+    time (unchanged if already hourly). Interpolating the accumulated rain spreads each step's rain
+    evenly over its hours, so totals between the original valid times are kept exactly, and wind is
+    interpolated as components."""
+    times = ds.valid_time.values
+    hourly = np.arange(times[0], times[-1] + np.timedelta64(1, "h"), np.timedelta64(1, "h"))
+    if len(hourly) == len(times):
+        return ds
+    i = (np.searchsorted(times, hourly, side="right") - 1).clip(0, len(times) - 2)
+    frac = (hourly - times[i]) / (times[i + 1] - times[i])
+    out = {}
+    for name, da in ds.data_vars.items():
+        da = da.transpose("valid_time", ...)
+        f = frac.reshape(-1, *[1] * (da.ndim - 1))
+        values = da.values[i] * (1 - f) + da.values[i + 1] * f
+        out[name] = da.isel(valid_time=i).copy(data=values).assign_coords(valid_time=hourly)
+    return xr.Dataset(out, attrs=ds.attrs)
+
+
 def wind_speed(ds):
     return np.hypot(ds["u10"], ds["v10"]).rename("wind_speed").assign_attrs(units="m s-1")
 

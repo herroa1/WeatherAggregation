@@ -9,6 +9,10 @@ Anyone can download `forecast.bin` and try passwords offline, so use a long pass
 Run `python -m website.build [--data-dir DIR] [--out DIR] [--no-refresh]`, with the password in
 `SITE_PASSWORD` (environment or the project-root `.env`). The output folder holds `index.html` and
 `forecast.bin`, ready to host.
+
+Charts and maps show every source at every hour, interpolating those with steps further apart, with
+weights so interpolated values count for less in the page's means (see `website/blend.py`). The scores
+only use each source's real valid times.
 """
 
 import argparse
@@ -28,8 +32,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from dotenv import load_dotenv
 
 from loaders import BENCHMARK, forecast_sources
-from loaders.standard import period_totals, regrid_to_box, run_time, wind_speed
+from loaders.standard import period_totals, regrid_to_box, run_time, to_hourly, wind_speed
 from loaders.store import UK_EXTENT, ForecastStore
+from website.blend import Weights
 
 HERE = Path(__file__).parent
 HORIZON_HOURS = 72
@@ -104,10 +109,26 @@ def _iso(t):
     return f"{pd.Timestamp(t):%Y-%m-%dT%H:%M}"
 
 
-def _series(da):
-    """{"t": [ISO valid times], "v": [values]}, leaving out missing values."""
+def _series(da, weights=None):
+    """{"t": [ISO valid times], "v": [values]}, leaving out missing values, plus "w": [weights] when any
+    value is interpolated (see `website.blend`)."""
     ok = np.isfinite(da.values)
-    return {"t": [_iso(t) for t in da.valid_time.values[ok]], "v": np.round(da.values[ok], 2).tolist()}
+    out = {"t": [_iso(t) for t in da.valid_time.values[ok]], "v": np.round(da.values[ok], 2).tolist()}
+    if weights is not None:
+        w = weights(da.valid_time.values[ok])
+        if (w < 1).any():
+            out["w"] = np.round(w, 2).tolist()
+    return out
+
+
+def _map_weights(fields, times, weights):
+    """Each source's weight at each map time, for the sources with any interpolated ones."""
+    out = {}
+    for name in fields:
+        w = weights(name, times)
+        if (w < 1).any():
+            out[name] = np.round(w, 2).tolist()
+    return out
 
 
 def _map_frames(fields, times, to_grid):
@@ -153,20 +174,30 @@ def _centres(extent, lat_res, lon_res):
             np.arange(lon_min + lon_res / 2, lon_max, lon_res).round(4))
 
 
-def _maps(rain, wind, lats, lons, to_grid, outline):
-    """One map area's data: its grid, outline, and each field's frames at every MAP_EVERY hours."""
+def _maps(rain, wind, lats, lons, to_grid, outline, weights):
+    """One map area's data: its grid, outline, and each field's frames (and weights) at every MAP_EVERY hours."""
     out = {"lats": lats.tolist(), "lons": lons.tolist(), "outline": json.loads((HERE / outline).read_text())}
     for field, values in [("rain", rain), ("wind", wind)]:
         times = _map_times(values)
-        out[field] = {"times": [_iso(t) for t in times], "values": _map_frames(values, times, to_grid)}
+        out[field] = {"times": [_iso(t) for t in times], "values": _map_frames(values, times, to_grid),
+                      "weights": _map_weights(values, times, lambda name, t: weights.weights(name, field, t))}
     return out
 
 
 def site_data(forecasts, failures=None, built=None):
     """Everything the page shows, as JSON-ready data, from standard forecasts (benchmark first)."""
-    rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in forecasts.items()}
-    wind = {name: wind_speed(ds) for name, ds in forecasts.items()}
     benchmark = forecasts.get(BENCHMARK)
+    weights = Weights(forecasts, SCORE_EXTENT, RAIN_HOURS, run_time(benchmark) if benchmark is not None else None)
+    hourly = {name: to_hourly(ds) for name, ds in forecasts.items()}
+    rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in hourly.items()}
+    wind = {name: wind_speed(ds) for name, ds in hourly.items()}
+    # Scores only at each source's real valid times
+    real_rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in forecasts.items()}
+    real_wind = {name: wind_speed(ds) for name, ds in forecasts.items()}
+
+    def series(field, name, da, where):
+        return _series(at_point(da, *where), lambda t: weights.weights(name, field, t))
+
     return {
         "built": _iso(built or datetime.now(timezone.utc).replace(tzinfo=None)),
         "benchmark": BENCHMARK,
@@ -176,15 +207,16 @@ def site_data(forecasts, failures=None, built=None):
                      "grid_km": round(grid_km(ds), 1)}
                     for name, ds in forecasts.items()],
         "failures": dict(failures or {}),
-        "locations": {place: {"rain": {name: _series(at_point(da, *where)) for name, da in rain.items()},
-                              "wind": {name: _series(at_point(da, *where)) for name, da in wind.items()}}
+        "locations": {place: {"rain": {name: series("rain", name, da, where) for name, da in rain.items()},
+                              "wind": {name: series("wind", name, da, where) for name, da in wind.items()}}
                       for place, where in LOCATIONS.items()},
         "maps": {"uk": _maps(rain, wind, *_centres(UK_EXTENT, MAP_RES, MAP_RES),
-                             lambda da: regrid_to_box(da, UK_EXTENT, MAP_RES), "uk_coastline.json"),
+                             lambda da: regrid_to_box(da, UK_EXTENT, MAP_RES), "uk_coastline.json", weights),
                  "london": _maps(rain, wind, *_centres(LONDON_EXTENT, *LONDON_RES),
                                  lambda da, ll=_centres(LONDON_EXTENT, *LONDON_RES): sample_nearest(da, *ll),
-                                 "london_outline.json")},
-        "scores": {"rain": _scores(rain), "wind": _scores(wind)} if benchmark is not None else {},
+                                 "london_outline.json", weights)},
+        "scores": {"rain": _scores(real_rain), "wind": _scores(real_wind)} if benchmark is not None else {},
+        "blend": weights.summary(),
     }
 
 

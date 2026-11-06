@@ -35,27 +35,36 @@ def test_site_data_has_each_sources_series_at_every_location(forecasts):
     # 6-hour totals start 6 hours into each run; 0.5 mm an hour on the benchmark, 3 mm per 6-hourly step
     assert london["rain"][BENCHMARK]["t"][0] == "2026-11-03T06:00"
     assert london["rain"][BENCHMARK]["v"][0] == pytest.approx(3.0)
-    assert london["rain"]["NOAA AIGFS"]["t"][:2] == ["2026-11-03T12:00", "2026-11-03T18:00"]
+    # AIGFS is interpolated onto every hour, its own 6-hourly times weighted 1 and the hours between less
+    aigfs = london["rain"]["NOAA AIGFS"]
+    assert aigfs["t"][:2] == ["2026-11-03T12:00", "2026-11-03T13:00"]
+    assert aigfs["v"][:2] == [pytest.approx(0.5), pytest.approx(0.5)]  # 0.5 mm per 6-hourly step
+    assert aigfs["w"][0] == 1 and aigfs["w"][1] <= 0.99
+    assert "w" not in london["rain"][BENCHMARK]  # hourly, so nothing interpolated
     assert london["wind"][BENCHMARK]["v"][0] == pytest.approx(5.0)  # (3, -4) m s-1
 
 
 @pytest.mark.parametrize("area", ["uk", "london"])
-def test_maps_are_every_3_hours_with_gaps_where_a_source_has_no_time(forecasts, area):
+def test_maps_are_every_3_hours_with_interpolated_sources_weighted(forecasts, area):
     maps = site.site_data(forecasts)["maps"][area]
     assert maps["outline"]["lon"] and len(maps["outline"]["lon"]) == len(maps["outline"]["lat"])
     cells = len(maps["lons"]) * len(maps["lats"])
     assert all(t[11:13] in {"00", "03", "06", "09", "12", "15", "18", "21"} for t in maps["wind"]["times"])
     for name, frames in maps["wind"]["values"].items():
         assert len(frames) == len(maps["wind"]["times"]) and all(len(f) == cells for f in frames)
-    # AIGFS (06Z run, 6-hourly) has nothing at 09:00
-    i = maps["wind"]["times"].index("2026-11-03T09:00")
-    assert all(v is None for v in maps["wind"]["values"]["NOAA AIGFS"][i])
-    assert 50 in maps["wind"]["values"][BENCHMARK][i]  # 5.0 m s-1, in tenths
+    # AIGFS (06Z run, 6-hourly) is interpolated at 09:00, and has nothing before its run
+    times, values, weights = maps["wind"]["times"], maps["wind"]["values"], maps["wind"]["weights"]
+    i, before = times.index("2026-11-03T09:00"), times.index("2026-11-03T03:00")
+    assert 50 in values["NOAA AIGFS"][i] and 50 in values[BENCHMARK][i]  # 5.0 m s-1, in tenths
+    assert weights["NOAA AIGFS"][i] <= 0.99 and weights["NOAA AIGFS"][times.index("2026-11-03T12:00")] == 1
+    assert all(v is None for v in values["NOAA AIGFS"][before])
+    assert list(weights) == ["NOAA AIGFS"]
 
 
 def test_scores_compare_each_source_with_the_benchmark(forecasts):
     scores = site.site_data(forecasts)["scores"]
     assert list(scores["wind"]) == ["NOAA AIGFS"]
+    assert scores["wind"]["NOAA AIGFS"]["times"] == 3  # its real 12, 18 and 00 UTC times only, not interpolated ones
     assert scores["wind"]["NOAA AIGFS"]["bias"] == 0
     assert scores["wind"]["NOAA AIGFS"]["corr"] is None  # constant wind has no correlation (not NaN, for JSON)
 
