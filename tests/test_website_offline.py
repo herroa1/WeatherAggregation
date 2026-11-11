@@ -32,14 +32,16 @@ def test_site_data_has_each_sources_series_at_every_location(forecasts):
     assert data["benchmark_end"] == "2026-11-03T22:00" and data["failures"] == {"X": "RuntimeError: down"}
     assert set(data["locations"]) == set(site.LOCATIONS)
     london = data["locations"]["Central London"]
-    # 6-hour totals start 6 hours into each run; 0.5 mm an hour on the benchmark, 3 mm per 6-hourly step
-    assert london["rain"][BENCHMARK]["t"][0] == "2026-11-03T06:00"
-    assert london["rain"][BENCHMARK]["v"][0] == pytest.approx(3.0)
-    # AIGFS is interpolated onto every hour, its own 6-hourly times weighted 1 and the hours between less
+    # 3-hour totals start 3 hours into each run; 0.5 mm an hour on the benchmark
+    assert site.RAIN_HOURS == 3
+    assert london["rain"][BENCHMARK]["t"][0] == "2026-11-03T03:00"
+    assert london["rain"][BENCHMARK]["v"][0] == pytest.approx(1.5)
+    # AIGFS is put onto every hour, each 0.5 mm 6-hourly step shared out like the benchmark's steady rain
+    # (so evenly). It has no real 3-hour totals, so all of them count for less than real values
     aigfs = london["rain"]["NOAA AIGFS"]
-    assert aigfs["t"][:2] == ["2026-11-03T12:00", "2026-11-03T13:00"]
-    assert aigfs["v"][:2] == [pytest.approx(0.5), pytest.approx(0.5)]  # 0.5 mm per 6-hourly step
-    assert aigfs["w"][0] == 1 and aigfs["w"][1] <= 0.99
+    assert aigfs["t"][:2] == ["2026-11-03T09:00", "2026-11-03T10:00"]
+    assert aigfs["v"][:2] == [pytest.approx(0.25), pytest.approx(0.25)]
+    assert max(aigfs["w"]) <= 0.99
     assert "w" not in london["rain"][BENCHMARK]  # hourly, so nothing interpolated
     assert london["wind"][BENCHMARK]["v"][0] == pytest.approx(5.0)  # (3, -4) m s-1
 
@@ -67,6 +69,7 @@ def test_scores_compare_each_source_with_the_benchmark(forecasts):
     assert scores["wind"]["NOAA AIGFS"]["times"] == 3  # its real 12, 18 and 00 UTC times only, not interpolated ones
     assert scores["wind"]["NOAA AIGFS"]["bias"] == 0
     assert scores["wind"]["NOAA AIGFS"]["corr"] is None  # constant wind has no correlation (not NaN, for JSON)
+    assert scores["rain"] == {}  # AIGFS has no real 3-hour rain totals to compare
 
 
 def test_encrypted_data_needs_the_password(forecasts):

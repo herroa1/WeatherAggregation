@@ -111,13 +111,42 @@ def period_totals(ds, hours):
     return totals.clip(min=0)
 
 
-def to_hourly(ds):
-    """A standard forecast linearly interpolated in time onto every hour from its first to last valid
-    time (unchanged if already hourly). Interpolating the accumulated rain spreads each step's rain
-    evenly over its hours, so totals between the original valid times are kept exactly, and wind is
-    interpolated as components."""
+def hourly_rain(ds):
+    """Rain (mm) in the hour ending at each valid time that comes an hour after the previous one: a
+    source's real hourly rain, leaving out its longer steps."""
+    rain = ds["rain_mm"]
+    times = rain.valid_time.values
+    hourly = np.flatnonzero(np.diff(times) == np.timedelta64(1, "h")) + 1
+    return (rain.isel(valid_time=hourly) - rain.isel(valid_time=hourly - 1).values).clip(min=0)
+
+
+def _on_grid(profile, like):
+    """A regular-grid field (valid_time, latitude, longitude) at each spatial point of `like`, from the
+    profile cell it falls in: (time, *like's spatial shape), NaN outside the profile's grid."""
+    lat, lon = xr.broadcast(like.latitude, like.longitude)
+    spatial = [d for d in like.dims if d != "valid_time"]
+    lat, lon = lat.transpose(*spatial).values, lon.transpose(*spatial).values
+    plat, plon = profile.latitude.values, profile.longitude.values
+    iy = np.rint((lat - plat[0]) / (plat[1] - plat[0])).astype(int)
+    ix = np.rint((lon - plon[0]) / (plon[1] - plon[0])).astype(int)
+    inside = (iy >= 0) & (iy < len(plat)) & (ix >= 0) & (ix < len(plon))
+    values = profile.transpose("valid_time", "latitude", "longitude").values[:, iy.clip(0, len(plat) - 1),
+                                                                               ix.clip(0, len(plon) - 1)]
+    return np.where(inside, values, np.nan)
+
+
+def to_hourly(ds, rain_profile=None, smoothing_mm=0.0):
+    """A standard forecast put onto every hour from its first to last valid time (unchanged if already
+    hourly). Totals between the original valid times are kept exactly, and wind is interpolated linearly,
+    as components.
+
+    Each step's rain is spread over its hours evenly, or, given `rain_profile` (rain in the hour ending at
+    each valid time, on a regular latitude/longitude grid, e.g. other sources' mean), in proportion to the
+    profile plus `smoothing_mm` in each hour, at the profile cell each grid point falls in. Steps where
+    the profile is missing any hour, or is dry with no smoothing, are spread evenly."""
     times = ds.valid_time.values
-    hourly = np.arange(times[0], times[-1] + np.timedelta64(1, "h"), np.timedelta64(1, "h"))
+    hour = np.timedelta64(1, "h")
+    hourly = np.arange(times[0], times[-1] + hour, hour)
     if len(hourly) == len(times):
         return ds
     i = (np.searchsorted(times, hourly, side="right") - 1).clip(0, len(times) - 2)
@@ -126,9 +155,26 @@ def to_hourly(ds):
     for name, da in ds.data_vars.items():
         da = da.transpose("valid_time", ...)
         f = frac.reshape(-1, *[1] * (da.ndim - 1))
+        if name == "rain_mm" and rain_profile is not None:
+            f = _shaped_fractions(f, _on_grid(rain_profile.reindex(valid_time=hourly), da) + smoothing_mm,
+                                  np.searchsorted(hourly, times[i]), np.searchsorted(hourly, times[i + 1]))
         values = da.values[i] * (1 - f) + da.values[i + 1] * f
         out[name] = da.isel(valid_time=i).copy(data=values).assign_coords(valid_time=hourly)
     return xr.Dataset(out, attrs=ds.attrs)
+
+
+def _shaped_fractions(even, weights, start, end):
+    """How far through its step's rain each hour is, from per-hour `weights` (rain in the hour ending at
+    each hour; the first is unused): the share of the step's weight up to that hour. Falls back to
+    `even` where a step's weights are missing or add up to nothing. `start`/`end` index each hour's step."""
+    known = np.isfinite(weights)
+    known[0] = True  # no hour ends at the first time, so it's never part of a step
+    cum = np.cumsum(np.where(known, weights, 0), axis=0)
+    missing = np.cumsum(~known, axis=0)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        shaped = (cum - cum[start]) / (cum[end] - cum[start])
+    ok = (missing[end] == missing[start]) & (cum[end] > cum[start])
+    return np.where(ok, shaped, even)
 
 
 def wind_speed(ds):

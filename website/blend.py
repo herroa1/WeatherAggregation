@@ -7,7 +7,9 @@ assumed equally accurate. A real value has weight 1.
 
 - σ_interp² is how far interpolation strays from what a source really forecast, by gap length and
   hours into the gap. It's measured on the hourly sources: keep only every gap-th hour, interpolate
-  back and compare with their real hourly values.
+  back and compare with their real hourly values. Rain is put back the same way as for the coarser
+  sources: shared out like the other sources' mean hourly rain (`rain_profile`), leaving out the one
+  being tested.
 - σ_model² is a source's own forecast error. If two sources have independent errors of the same size,
   the variance of their difference is 2σ_model², so it's half the mean squared difference between
   pairs of sources, at the times both really forecast. No observations are needed. It grows with lead
@@ -21,7 +23,8 @@ from itertools import combinations
 import numpy as np
 import xarray as xr
 
-from loaders.standard import period_totals, regrid_to_box, run_time, to_hourly, wind_speed
+from loaders.standard import hourly_rain, period_totals, regrid_to_box, run_time, to_hourly, wind_speed
+from website.config import RAIN_PROFILE_RES, RAIN_SPLIT_SMOOTHING_MM
 
 LEAD_BAND_HOURS = 24
 LEAD_BANDS = 3  # 0-24 h, 24-48 h, then everything after 48 h
@@ -51,9 +54,41 @@ def field_positions(field, real_times, times, rain_hours):
     return gap, offset
 
 
+def has_totals(ds, hours):
+    """Whether a standard forecast has valid times `hours` apart, so it has real rain totals over that long."""
+    times = ds.valid_time.values
+    return bool(np.isin(times + np.timedelta64(hours, "h"), times).any())
+
+
 def fields(ds, rain_hours):
-    """{"rain": rain totals, "wind": wind speed} from a standard forecast."""
-    return {"rain": period_totals(ds, rain_hours), "wind": wind_speed(ds)}
+    """{"rain": rain totals, "wind": wind speed} from a standard forecast, without "rain" if it has no
+    valid times rain_hours apart (e.g. 3-hour totals from a 6-hourly source)."""
+    out = {"wind": wind_speed(ds)}
+    if has_totals(ds, rain_hours):
+        out["rain"] = period_totals(ds, rain_hours)
+    return out
+
+
+def hourly_rains(forecasts, extent, res=RAIN_PROFILE_RES):
+    """{name: real hourly rain averaged onto the res° grid over extent}, for the sources that have any
+    (see `loaders.standard.hourly_rain`)."""
+    out = {}
+    for name, ds in forecasts.items():
+        rain = hourly_rain(ds)
+        if rain.valid_time.size:
+            out[name] = regrid_to_box(rain, extent, res)
+    return out
+
+
+def rain_profile(hourly, exclude=()):
+    """Mean hourly rain at each hour and grid cell over the sources in `hourly` (from `hourly_rains`)
+    that have it there, leaving out `exclude`: what coarser sources' steps are shared out like
+    (`loaders.standard.to_hourly`). None if no source is left."""
+    rains = [da for name, da in hourly.items() if name not in exclude]
+    if not rains:
+        return None
+    stacked = xr.concat(xr.align(*rains, join="outer"), dim="source")
+    return stacked.mean("source", skipna=True)
 
 
 def coarse(ds, extent):
@@ -67,17 +102,19 @@ def _subsampled(ds, gap):
     return ds.isel(valid_time=np.flatnonzero(hours % gap == 0))
 
 
-def interp_variance(hourly_sources, gaps, rain_hours):
-    """{field: {(gap, offset): σ_interp²}} from hourly sources (coarse standard forecasts), for each gap
-    in `gaps` and each hour into it. Pooled over sources, grid cells and times."""
+def interp_variance(hourly_sources, gaps, rain_hours, hourly=None, smoothing_mm=RAIN_SPLIT_SMOOTHING_MM):
+    """{field: {(gap, offset): σ_interp²}} from hourly sources ({name: coarse standard forecast}), for
+    each gap in `gaps` and each hour into it. Pooled over sources, grid cells and times. Rain is put back
+    like the other sources' mean hourly rain in `hourly` (from `hourly_rains`) when given."""
     sums = {}
-    for ds in hourly_sources:
+    for name, ds in hourly_sources.items():
         truth = fields(ds, rain_hours)
+        profile = rain_profile(hourly, exclude={name}) if hourly else None
         for gap in gaps:
             real = _subsampled(ds, gap)
             if real.valid_time.size < 2:
                 continue
-            for field, da in fields(to_hourly(real), rain_hours).items():
+            for field, da in fields(to_hourly(real, profile, smoothing_mm), rain_hours).items():
                 a, b = xr.align(truth[field], da, join="inner")
                 g, k = field_positions(field, real.valid_time.values, a.valid_time.values, rain_hours)
                 sq = ((b - a) ** 2).values.reshape(a.valid_time.size, -1)
@@ -106,6 +143,8 @@ def model_variance(sources, reference, rain_hours):
     for field in ("rain", "wind"):
         s, n = np.zeros(LEAD_BANDS), np.zeros(LEAD_BANDS)
         for x, y in combinations(by_source, 2):
+            if field not in x or field not in y:
+                continue
             a, b = xr.align(x[field], y[field], join="inner")
             if a.valid_time.size == 0:
                 continue
@@ -124,14 +163,14 @@ def model_variance(sources, reference, rain_hours):
 class Weights:
     """Each source's weight at each hour, from the forecasts as loaded (real valid times only)."""
 
-    def __init__(self, forecasts, extent, rain_hours, reference=None):
+    def __init__(self, forecasts, extent, rain_hours, reference=None, smoothing_mm=RAIN_SPLIT_SMOOTHING_MM):
         self.rain_hours = rain_hours
         self.real_times = {name: ds.valid_time.values for name, ds in forecasts.items()}
         self.reference = reference if reference is not None else min(run_time(ds) for ds in forecasts.values())
         small = {name: coarse(ds, extent) for name, ds in forecasts.items()}
         gaps = sorted({int(g) for t in self.real_times.values() for g in np.diff(t) // HOUR if g > 1})
-        hourly = [ds for name, ds in small.items() if (np.diff(self.real_times[name]) == HOUR).all()]
-        self.interp = interp_variance(hourly, gaps, rain_hours)
+        hourly = {name: ds for name, ds in small.items() if (np.diff(self.real_times[name]) == HOUR).all()}
+        self.interp = interp_variance(hourly, gaps, rain_hours, hourly_rains(small, extent), smoothing_mm)
         self.model = model_variance(list(small.values()), self.reference, rain_hours)
 
     def weights(self, name, field, times):

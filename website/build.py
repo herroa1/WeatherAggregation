@@ -10,9 +10,10 @@ Run `python -m website.build [--data-dir DIR] [--out DIR] [--no-refresh]`, with 
 `SITE_PASSWORD` (environment or the project-root `.env`). The output folder holds `index.html` and
 `forecast.bin`, ready to host.
 
-Charts and maps show every source at every hour, interpolating those with steps further apart, with
-weights so interpolated values count for less in the page's means (see `website/blend.py`). The scores
-only use each source's real valid times.
+Charts and maps show every source at every hour, interpolating those with steps further apart (their
+rain shared out like the other sources' hourly rain), with weights so interpolated values count for less
+in the page's means (see `website/blend.py`). The scores only use each source's real valid times, so a
+source with steps longer than the rain totals has no rain scores. Settings are in `website/config.py`.
 """
 
 import argparse
@@ -34,11 +35,11 @@ from dotenv import load_dotenv
 from loaders import BENCHMARK, forecast_sources
 from loaders.standard import period_totals, regrid_to_box, run_time, to_hourly, wind_speed
 from loaders.store import UK_EXTENT, ForecastStore
-from website.blend import Weights
+from website.blend import Weights, has_totals, hourly_rains, rain_profile
+from website.config import RAIN_HOURS, RAIN_PROFILE_RES, RAIN_SPLIT_SMOOTHING_MM
 
 HERE = Path(__file__).parent
 HORIZON_HOURS = 72
-RAIN_HOURS = 6
 # UK maps are averaged onto this grid (degrees), every MAP_EVERY hours, to keep the data file small
 MAP_RES = 0.5
 MAP_EVERY = 3
@@ -188,11 +189,13 @@ def site_data(forecasts, failures=None, built=None):
     """Everything the page shows, as JSON-ready data, from standard forecasts (benchmark first)."""
     benchmark = forecasts.get(BENCHMARK)
     weights = Weights(forecasts, SCORE_EXTENT, RAIN_HOURS, run_time(benchmark) if benchmark is not None else None)
-    hourly = {name: to_hourly(ds) for name, ds in forecasts.items()}
+    # Coarser sources' rain is shared out over each step like the other sources' mean hourly rain
+    profile = rain_profile(hourly_rains(forecasts, UK_EXTENT, RAIN_PROFILE_RES))
+    hourly = {name: to_hourly(ds, profile, RAIN_SPLIT_SMOOTHING_MM) for name, ds in forecasts.items()}
     rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in hourly.items()}
     wind = {name: wind_speed(ds) for name, ds in hourly.items()}
     # Scores only at each source's real valid times
-    real_rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in forecasts.items()}
+    real_rain = {name: period_totals(ds, RAIN_HOURS) for name, ds in forecasts.items() if has_totals(ds, RAIN_HOURS)}
     real_wind = {name: wind_speed(ds) for name, ds in forecasts.items()}
 
     def series(field, name, da, where):

@@ -14,10 +14,15 @@ hosted on GitHub Pages.
   Thames; colours scaled to London's range). Charts are for five areas of London and five UK cities.
   Map outlines come from Natural Earth, written by [`outlines.py`](outlines.py).
 - Sources with steps more than an hour apart (ECMWF IFS, AIFS, AIGFS, and Met Office global later on)
-  are interpolated onto every hour, so the means use every source at every hour. Interpolated values
+  are interpolated onto every hour, so the means use every source at every hour. Each of their steps'
+  rain is shared out over its hours like the other sources' mean hourly rain there (plus a smoothing
+  constant, so near-dry hints don't put it all in one hour), rather than evenly. Interpolated values
   count for less, most in the middle of a gap, with weights from inverse-variance weighting. The
   weights are measured afresh each build from the forecasts themselves, so no observations are needed
-  (see [`blend.py`](blend.py)). The scores only use each source's real times.
+  (see [`blend.py`](blend.py)). The scores only use each source's real times, so sources whose steps
+  are longer than the rain totals (AIFS and AIGFS, 6-hourly, against 3-hour totals) have no rain scores.
+- The rain totals' length, the smoothing constant and the profile's grid are set in
+  [`config.py`](config.py).
 - Source picking, the means (at each time, the weighted average of the picked sources) and the maps
   are all worked out in the browser, so they update as you pick sources.
 

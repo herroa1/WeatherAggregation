@@ -90,13 +90,13 @@
 
     <section class="card">
       <h2>Mean of selected sources</h2>
-      <div class="muted">At each time, the average of the picked sources. Sources with steps more than an hour apart are interpolated between them, and those values count for a little less, most in the middle of a gap. The shading spans the lowest to highest of them.</div>
+      <div class="muted">At each time, the average of the picked sources. Sources with steps more than an hour apart are interpolated between them, and those values count for a little less, most in the middle of a gap. The shading spans the lowest to highest of them. <span class="rain-note"></span></div>
       <div id="mean-plot" class="plot"></div>
     </section>
 
     <section class="card">
       <h2>All selected sources</h2>
-      <div class="muted">Each source, with the mean in bold. Dots mark each source's own forecast times; lines between them are interpolated. Hover or tap for values.</div>
+      <div class="muted">Each source, with the mean in bold. Dots mark each source's own forecast times; lines between them are interpolated. Hover or tap for values. <span class="rain-note"></span></div>
       <div id="all-plot" class="plot"></div>
     </section>
 
@@ -426,10 +426,12 @@ document.querySelectorAll("#map-area button").forEach((b) =>
 // ---- Tables
 
 function drawTables() {
-  const s = data.scores || {}, rows = Object.keys(s.rain || {});
+  const s = data.scores || {};
+  const rows = data.sources.map((src) => src.name).filter((n) => (s.rain && n in s.rain) || (s.wind && n in s.wind));
   $("scores-note").textContent = rows.length
     ? `Each source against the ${data.benchmark} over mainland UK, on a 0.5° grid at the times both forecast. ` +
-      `Rain is ${data.rain_hours}-hour totals (mm), wind is 10 m speed (m/s).`
+      `Rain is ${data.rain_hours}-hour totals (mm), wind is 10 m speed (m/s). ` +
+      `Sources with steps longer than ${data.rain_hours} hours have no real rain totals to score.`
     : "No source shares any times with the benchmark.";
   const cell = (r, k) => (r && r[k] !== null ? r[k].toFixed(2) : "–");
   $("scores").innerHTML = rows.length ? `
@@ -506,6 +508,11 @@ function start() {
   const hoursOld = (Date.now() - new Date(data.built + "Z")) / 3.6e6;
   $("built").innerHTML = `Updated ${fmtTime(data.built)}` +
     (hoursOld > 12 ? ` <span class="warn">(${Math.round(hoursOld)} hours ago)</span>` : "");
+  const h = data.rain_hours, from = String(14 - h).padStart(2, "0");
+  document.querySelectorAll(".rain-note").forEach((el) => {
+    el.textContent = `${rainLabel()} is the total rain (mm) over the ${h} hours before each time: ` +
+      `at 14:00 it's the rain from ${from}:00 to 14:00. Times are UTC.`;
+  });
   $("login").hidden = true;
   $("app").hidden = false;
   drawTables();
